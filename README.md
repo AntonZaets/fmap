@@ -1,7 +1,7 @@
 fmap
 =====
 
-Simple replacement for standard `map` module for case when all possible keys are known and there aren't too many such keys.
+Simple replacement for standard `map` module for case when all possible keys are known and there aren't too many such keys. This implementation is just an experiment for comparing with map performance.
 Doc is skipped for now, the difference from the usual `map`:
 - object should be build with `fmap:new` which expects list of all possible keys and value that will indicate unexistence of the key;
 - all function that returns key in map returns tuple `{Key :: any(), Index :: pos_integer()}`;
