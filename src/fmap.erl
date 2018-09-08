@@ -15,6 +15,7 @@
          fold/3,
          map/2,
          update_with/3, update_with/4]).
+-export([index_to_key/2]).
 
 -record(fmap, {keys = [], undef = undefined, arr = {}, size = 0}).
 
@@ -59,7 +60,7 @@ is_key(K, #fmap{undef = Undefined} = FMap) ->
     end.
 
 keys(#fmap{keys = Keys} = FMap) ->
-    [ K || K <- Keys, is_key(K, FMap) ].
+    do_keys(Keys, FMap, 1, []).
 
 values(#fmap{undef = Undefined, arr = Arr}) ->
     [ El || El <- tuple_to_list(Arr), El =/= Undefined ].
@@ -90,11 +91,11 @@ to_list(#fmap{arr = Arr, keys = Keys, undef = Undefined}) ->
 to_map(FMap) ->
     maps:from_list(to_list(FMap)).
 
-fold(Fun, Init, FMap) ->
-    do_fold(Fun, Init, FMap, 1).
+fold(Fun, Init, #fmap{keys = Keys} = FMap) ->
+    do_fold(Fun, Init, Keys, FMap, 1).
 
-map(Fun, FMap) ->
-    do_map(Fun, FMap, FMap, 1).
+map(Fun, #fmap{keys = Keys} = FMap) ->
+    do_map(Fun, Keys, FMap, FMap, 1).
 
 take(Key, #fmap{undef = Undefined} = FMap) ->
     case do_get(Key, FMap, false) of
@@ -114,29 +115,42 @@ update_with(Key, Fun, Init, #fmap{undef = Undefined} = FMap) ->
             put(Key, Fun(V), FMap)
     end.
 
+index_to_key(Index, #fmap{keys = Keys}) ->
+    lists:nth(Index, Keys).
+
 %%====================================================================
 %% Internal functions
 %%====================================================================
-do_map(_Fun, #fmap{arr = Arr}, AccMap, I) when I > erlang:size(Arr) ->
-    AccMap;
-do_map(Fun, #fmap{arr = Arr, undef = Undefined} = SrcMap, AccMap, I) ->
+do_keys(_AllKeys, #fmap{arr = Arr}, I, Acc) when I > erlang:size(Arr) ->
+    lists:reverse(Acc);
+do_keys([K | T], #fmap{arr = Arr, undef = Undefined} = FMap, I, Acc) ->
     case element(I, Arr) of
         Undefined ->
-            do_map(Fun, SrcMap, AccMap, I + 1);
-        V ->
-            NewAccMap = put(I, Fun(I, V), AccMap),
-            do_map(Fun, SrcMap, NewAccMap, I + 1)
+            do_keys(T, FMap, I + 1, Acc);
+        _ ->
+            do_keys(T, FMap, I + 1, [{K, I} | Acc])
     end.
 
-do_fold(_Fun, Acc, #fmap{arr = Arr}, I) when I > erlang:size(Arr)->
-    Acc;
-do_fold(Fun, Acc, #fmap{arr = Arr, undef = Undefined} = FMap, I) ->
+do_map(_Fun, _AllKeys, #fmap{arr = Arr}, AccMap, I) when I > erlang:size(Arr) ->
+    AccMap;
+do_map(Fun, [K | T],  #fmap{arr = Arr, undef = Undefined} = SrcMap, AccMap, I) ->
     case element(I, Arr) of
         Undefined ->
-            do_fold(Fun, Acc, FMap, I + 1);
+            do_map(Fun, T, SrcMap, AccMap, I + 1);
         V ->
-            NewAcc = Fun(I, V, Acc),
-            do_fold(Fun, NewAcc, FMap, I + 1)
+            NewAccMap = put(I, Fun({K, I}, V), AccMap),
+            do_map(Fun, T, SrcMap, NewAccMap, I + 1)
+    end.
+
+do_fold(_Fun, Acc, _AllKeys, #fmap{arr = Arr}, I) when I > erlang:size(Arr)->
+    Acc;
+do_fold(Fun, Acc, [K | T], #fmap{arr = Arr, undef = Undefined} = FMap, I) ->
+    case element(I, Arr) of
+        Undefined ->
+            do_fold(Fun, Acc, T, FMap, I + 1);
+        V ->
+            NewAcc = Fun({K, I}, V, Acc),
+            do_fold(Fun, NewAcc, T, FMap, I + 1)
     end.
 
 do_merge(#fmap{arr = Arr1} = FMap1, _, I) when I > erlang:size(Arr1) ->
@@ -220,6 +234,7 @@ prepare_data() ->
 put_get_test_() ->
     {M, FM} = prepare_data(),
     [?_assertEqual(get(2, FM), maps:get(b, M)),
+     ?_assertEqual(get(2, FM, null), maps:get(b, M)),
      ?_assertEqual(get(3, FM), maps:get(c, M)),
      ?_assertEqual(get(-1, FM), maps:get(c, M)),
      ?_assertEqual(get(-2, FM), maps:get(b, M)),
@@ -227,7 +242,8 @@ put_get_test_() ->
      ?_assertThrow({badkey, 4}, get(4, FM, null)),
      ?_assertThrow({badkey, 4}, get(4, FM)),
      ?_assertThrow({badkey, -4}, get(-4, FM)),
-     ?_assertThrow({badkey, 1}, get(1, FM))].
+     ?_assertThrow({badkey, 1}, get(1, FM)),
+     ?_assertThrow({badkey, 4}, put(4, val4, FM))].
 
 with_test_() ->
     {_, FM0} = new([a, b, c], undefined),
@@ -297,5 +313,44 @@ is_key_test_() ->
     FM = put(1, a, FM0),
     [?_assertEqual(true, is_key(1, FM)),
      ?_assertEqual(false, is_key(2, FM))].
+
+map_test() ->
+    {_, FM0} = new([a, b, c], undefined),
+    FM = put(3, cval, put(1, aval, FM0)),
+    ?assertEqual(#{a => {a, 1, aval}, c => {c, 3, cval}},
+                 to_map(map(fun({K, I}, V) -> {K, I, V} end, FM))).
+
+fold_test() ->
+    {_, FM0} = new([a, b, c], undefined),
+    FM = put(3, cval, put(1, aval, FM0)),
+    ?assertEqual([{c, 3, cval}, {a, 1, aval}],
+                 fold(fun({K, I}, V, Acc) -> [{K, I, V} | Acc] end, [], FM)).
+
+keys_test() ->
+    {_, FM0} = new([a, b, c], undefined),
+    FM = put(3, cval, put(1, aval, FM0)),
+    ?assertEqual([{a, 1}, {c, 3}], keys(FM)).
+
+values_test() ->
+    {_, FM0} = new([a, b, c], undefined),
+    FM = put(3, cval, put(1, aval, FM0)),
+    ?assertEqual([aval, cval], values(FM)).
+
+update_with_test_() ->
+    {_, FM0} = new([a, b], undefined),
+    FM = put(1, <<"a">>, FM0),
+    [?_assertEqual(#{a => <<"a1">>},
+                   to_map(update_with(1, fun(V) -> <<V/binary, "1">> end, FM))),
+     ?_assertEqual(#{a => <<"a1">>},
+                   to_map(update_with(1, fun(V) -> <<V/binary, "1">> end, some_value, FM))),
+     ?_assertThrow({badkey, 2},
+                   to_map(update_with(2, fun(_V) -> never_called end, FM))),
+     ?_assertEqual(#{a => <<"a">>, b => some_value},
+                   to_map(update_with(2, fun(_V) -> never_called end, some_value, FM)))].
+
+index_to_key_test() ->
+    {_, FM0} = new([a, b, c], undefined),
+    FM = put(3, cval, put(1, aval, FM0)),
+    ?assertEqual(c, index_to_key(3, FM)).
 
 -endif.
